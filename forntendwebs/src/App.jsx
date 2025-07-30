@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from'react'
 import Sidebar from './components/Sidebar'
 import TypingDots from './components/TypingDots'
+import ReactMarkdown from 'react-markdown' // Import ReactMarkdown
+import remarkGfm from 'remark-gfm' // Import remarkGfm for GitHub Flavored Markdown
 
 export default function App() {
   // — UI state
@@ -35,7 +37,7 @@ export default function App() {
         const res = await fetch(url, options);
         if (!res.ok) {
           // If a "Too Many Requests" error (429) occurs, apply backoff and retry
-          if (res.status === 429) { 
+          if (res.status === 429) {
             const delay = initialDelay * Math.pow(2, retries) + Math.random() * 1000; // Exponential backoff with jitter
             console.warn(`Rate limit hit for ${url}, retrying in ${delay}ms...`);
             await new Promise(resolve => setTimeout(resolve, delay));
@@ -66,7 +68,7 @@ export default function App() {
     if (!userId) return
 
     fetchDataWithBackoff('http://localhost:5000/api/sessions', {
-      headers: { 'X-User-Id': userId }
+      headers: { 'X-User-Id': "dummy-user-123" }
     })
       .then(res => res.json())
       .then(sessions => {
@@ -125,15 +127,26 @@ export default function App() {
       )
 
       // 2️⃣ Call Gemini
-      const gemRes = await fetchDataWithBackoff('http://localhost:5000/api/gemini', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Id': userId
-        },
-        body: JSON.stringify({ prompt: text })
-      })
-      const { text: reply } = await gemRes.json()
+const groqRes = await fetchDataWithBackoff('http://localhost:5000/api/groq', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-User-Id': userId
+  },
+  body: JSON.stringify({ prompt: text })
+});
+
+const groqData = await groqRes.json();
+
+if (!groqRes.ok) {
+  console.error("Groq error:", groqData?.error || groqData);
+  setIsLoading(false);
+  return; // prevent saving invalid response
+}
+
+const { text: reply } = groqData;
+// proceed with saving reply message
+
 
       // 3️⃣ Save bot reply
       await fetchDataWithBackoff(
@@ -196,81 +209,95 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen">
-      {/* The Sidebar component */}
-      <Sidebar
-        onSelectSession={setSessionId}
-        selected={sessionId}
-        // This prop allows Sidebar to tell App.jsx its current open/closed state
-        onToggleSidebar={setIsSidebarActuallyOpen} 
-      />
+<div className="flex h-screen bg-gray-50">
+  {/* Sidebar */}
+  <Sidebar
+    onSelectSession={setSessionId}
+    selected={sessionId}
+    onToggleSidebar={setIsSidebarActuallyOpen}
+  />
 
-      {/* Main content area, whose left margin adjusts based on sidebar visibility */}
-      <div className={`
-        flex-1 flex flex-col p-4  
-        transition-all duration-300 ease-in-out
-        ${isSidebarActuallyOpen ? 'ml-64 md:ml-64' : 'ml-0'} /* Add ml-64 when sidebar is open, 
-                                                                 else ml-0. md:ml-64 keeps it fixed on desktop */
-        `}>
-        {/* Chat history */}
-        <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
-          {chat.map((msg, i) => (
-            <div
-              key={i}
-              className={`p-3 rounded ${
-                msg.role === 'user'
-                  ? 'bg-blue-100'
-                  : 'bg-gray-100'
-              }`}
+  {/* Main content area */}
+  <div
+    className={`flex-1 flex flex-col transition-all duration-300 ease-in-out p-6 md:p-8 bg-black
+      ${isSidebarActuallyOpen ? 'ml-64 md:ml-64' : 'ml-0'}
+    `}
+  >
+    {/* <p className="font-baloo text-lg">Hello markdown</p> */}
+
+    {/* Chat history */}
+    <div className="flex-1 overflow-y-auto space-y-4 pr-2 max-h-[calc(100vh-170px)] font-baloo ">
+      {chat.map((msg, i) => (
+        <div
+          key={i}
+          className={`p-4 rounded-2xl shadow-sm ${
+            msg.role === 'user' ? 'bg-blue-400' : 'bg-green-100'
+          }`}
+        >
+          <p className="mb-1 text-md font-semibold text-gray-900">
+            {msg.role === 'user' ? 'You' : 'Gemini'}
+          </p>
+
+          {msg.role === 'bot' ? (
+<ReactMarkdown
+  components={{
+    p: ({ node, ...props }) => (
+      <p className="my-paragraph" {...props} />
+    ),
+    h1: ({ node, ...props }) => (
+      <h1 className="my-heading" {...props} />
+    ),
+    // Add more tags if needed (e.g. `ul`, `li`, `code`, etc.)
+  }}
+>
+  {msg.text}
+  
+</ReactMarkdown>
+          ) : (
+            <p className="text-sm text-gray-800">{msg.text}</p>
+          )}
+
+          {msg.role === 'bot' && (
+            <button
+              className="mt-2 text-xs text-blue-500 hover:underline"
+              onClick={() => speak(msg.text)}
             >
-              <p className="mb-1 font-semibold">
-                {msg.role === 'user' ? 'You' : 'Gemini'}
-              </p>
-              <p>{msg.text}</p>
-              {msg.role === 'bot' && (
-                <button
-                  className="mt-2 text-sm text-blue-500 hover:underline"
-                  onClick={() => speak(msg.text)}
-                >
-                  🔊 Speak
-                </button>
-              )}
-            </div>
-          ))}
-
-          {isLoading && (
-            <div className="p-3 rounded bg-gray-100">
-              <p className="mb-1 font-semibold">
-                Gemini
-              </p>
-              <p>{typingText}</p>
-              <TypingDots />
-            </div>
+              🔊 Speak
+            </button>
           )}
         </div>
+      ))}
 
-        {/* Input area */}
-        <div className="mt-4 flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e =>
-              e.key === 'Enter' && sendPrompt()
-            }
-            disabled={!sessionId}
-            className="flex-1 p-2 border rounded"
-            placeholder="Ask about computer networks..."
-          />
-          <button
-            onClick={sendPrompt}
-            disabled={isLoading || !sessionId}
-            className="bg-blue-500 text-white px-4 py-2 rounded"
-          >
-            {isLoading ? 'Sending...' : 'Send'}
-          </button>
+      {isLoading && (
+        <div className="p-4 rounded-xl bg-white shadow-sm">
+          <p className="mb-1 text-sm font-semibold text-gray-600">Gemini</p>
+          <p className="text-sm text-gray-800">{typingText}</p>
+          <TypingDots />
         </div>
-      </div>
+      )}
     </div>
+
+    {/* Input area */}
+    <div className="mt-6 flex gap-3 items-center">
+      <input
+        type="text"
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && sendPrompt()}
+        disabled={!sessionId}
+        className="flex-1 px-4 py-2 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+        placeholder="Ask about computer networks..."
+      />
+      <button
+        onClick={sendPrompt}
+        disabled={isLoading || !sessionId}
+        className="bg-blue-800 hover:bg-blue-700 text-white px-5 py-2 rounded-xl shadow-md transition"
+      >
+        {isLoading ? 'Sending...' : 'Send'}
+      </button>
+    </div>
+  </div>
+</div>
+
   )
 }

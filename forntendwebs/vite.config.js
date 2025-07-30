@@ -7,4 +7,11 @@ export default defineConfig({
   plugins: [react(),
         tailwindcss(),
   ],
+  theme: {
+    extend: {
+      fontFamily: {
+        baloo: ['"Baloo Bhai 2"'],
+      },
+    },
+  },
 })

@@ -1,9 +1,9 @@
-// server.js
 import 'dotenv/config';
 import express from 'express';
-import fetch from 'node-fetch';
+import fetch from 'node-fetch'; // Keep node-fetch for Deepgram/D-ID if still used
 import mongoose from 'mongoose';
 import cors from 'cors';
+import { Groq } from 'groq-sdk'; // <--- NEW: Import Groq SDK
 
 import User from './models/User.js';
 import Session from './models/Session.js';
@@ -14,11 +14,22 @@ app.use(cors());
 app.use(express.json());
 
 const {
-  GEMINI_KEY,
+  GEMINI_KEY, // Still here, but not used for chat anymore
   DEEPGRAM_KEY,
   DID_API_KEY,
-  MONGO_URI
+  MONGO_URI,
+  GROQ_KEY // Make sure this is correctly loaded from your .env
 } = process.env;
+
+// --- TEMPORARY DEBUGGING LOG ---
+console.log("Server starting. GROQ_KEY (first 5 chars):", GROQ_KEY ? GROQ_KEY.substring(0, 5) : "Not loaded");
+// Remember to remove this console.log after debugging for security reasons!
+// -------------------------------
+
+// <--- NEW: Initialize Groq SDK
+const groq = new Groq({
+  apiKey: GROQ_KEY // Pass your API key here
+});
 
 // ----- Connect to MongoDB -----
 await mongoose.connect(MONGO_URI, {
@@ -66,23 +77,38 @@ app.get('/api/sessions/:sid/messages', async (req, res) => {
 // Post a message (user or bot)
 app.post('/api/sessions/:sid/messages', async (req, res) => {
   const { role, text } = req.body;
-  const msg = await Message.create({
-    sessionId: req.params.sid,
-    role,
-    text
-  });
-  res.json(msg);
+  // Add a robust check here before proceeding
+  if (!role || typeof text !== 'string' || text.trim().length === 0) {
+    console.error('Invalid or missing role or text in request body:', req.body);
+    return res.status(400).json({ error: 'Message payload missing or invalid (role or text).' });
+  }
+  try {
+    const msg = await Message.create({
+      sessionId: req.params.sid,
+      role,
+      text
+    });
+    res.json(msg);
+  } catch (error) {
+    console.error("Error saving message to DB:", error);
+    // You can check for Mongoose validation errors specifically
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: 'Failed to save message due to server error.' });
+  }
 });
 
-// GET /api/chats
+// GET /api/chats (This route seems misplaced or unused, keeping for now)
 app.get("/chats", async (req, res) => {
   const { user_id, session_id } = req.query;
 
   try {
-    const chat = await Chat.findOne({ user_id, session_id });
-    if (!chat) return res.status(404).json({ error: "Chat not found" });
-
-    res.json(chat.messages);
+    // Assuming Chat model exists, otherwise this will fail
+    // const chat = await Chat.findOne({ user_id, session_id }); // Chat model not provided
+    // if (!chat) return res.status(404).json({ error: "Chat not found" });
+    // res.json(chat.messages);
+    res.status(501).json({ error: "This route is not implemented or Chat model is missing." });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -113,33 +139,6 @@ app.delete('/api/sessions/:sid', async (req, res) => {
 });
 
 
-// ----- Gemini Proxy -----
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
-const SYSTEM_CONTEXT =
-  "You are a helpful assistant that only answers questions related to computer networks. If the question is off-topic, reply politely and decline.";
-
-app.post('/api/gemini', async (req, res) => {
-  const { prompt } = req.body;
-  try {
-    const payload = {
-      contents: [{
-        role: 'user',
-        parts: [{ text: SYSTEM_CONTEXT + "\n\nUser: " + prompt }],
-      }],
-    };
-    const response = await fetch(GEMINI_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    res.json({ text });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch Gemini response' });
-  }
-});
 // -- after your auth middleware but before /api/sessions --
 
 app.post('/api/users', async (req, res) => {
@@ -149,6 +148,52 @@ app.post('/api/users', async (req, res) => {
   if (exists) return res.status(409).send('User already exists');
   const user = await User.create({ userId });
   res.status(201).json(user);
+});
+
+// ----- Groq Proxy (UPDATED to use SDK) -----
+const GROQ_MODEL = "llama3-8b-8192"; // Or "llama3-70b-8192"
+const SYSTEM_CONTEXT =
+  "You are a helpful assistant that only answers questions related to Java. If the question is off-topic, reply politely and decline.";
+
+app.post('/api/groq', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt is required.' });
+  }
+
+  try {
+    // Use the Groq SDK to create a chat completion
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: SYSTEM_CONTEXT },
+        { role: "user", content: prompt }
+      ],
+      model: GROQ_MODEL,
+      temperature: 0.7,
+      max_tokens: 150,
+      stream: false, // <--- Set to false to get a single response for the current client
+      top_p: 1,
+      stop: null
+    });
+
+    // Extract the content from the non-streaming response
+    const text = chatCompletion.choices?.[0]?.message?.content;
+
+    if (!text) {
+      console.warn("Groq API returned no text content:", chatCompletion);
+      return res.status(500).json({ error: "Groq API did not return a valid text response." });
+    }
+
+    res.json({ text }); // Send the text back as a single JSON object
+
+  } catch (err) {
+    console.error('[Groq Proxy Error]:', err);
+    // Check for specific Groq API errors (e.g., invalid key)
+    if (err.error && err.error.type === 'invalid_request_error' && err.error.code === 'invalid_api_key') {
+        return res.status(401).json({ error: 'Invalid Groq API Key. Please check your .env file.' });
+    }
+    res.status(500).json({ error: 'Failed to fetch Groq response' });
+  }
 });
 
 
