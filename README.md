@@ -41,7 +41,7 @@ Chat with Gemini is a simple chat application that allows users to communicate i
 
 ## Usage
 - Create an account or log in (if authentication is implemented).
-- Start chatting with other users in real-time.
+- Start chatting with Gemini  in real-time.
 
 ## Contributing
 Contributions are welcome! Please follow these steps:
